@@ -3,15 +3,16 @@ use clickhouse::Client;
 use primitive_types::U256;
 use rand::Rng;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, error};
+use tracing::error;
+use std::time::Instant;
 
 // Constants
 const CLICKHOUSE_URL: &str = "http://localhost:8123";
 const CLICKHOUSE_DATABASE: &str = "mining";
 const CLICKHOUSE_USERNAME: &str = "default";
 const CLICKHOUSE_PASSWORD: &str = "5555";
-const BATCH_SIZE: usize = 10;
-const TOTAL_SHARES: usize = 100;
+const BATCH_SIZE: usize = 1000;
+const TOTAL_SHARES: usize = 1000000;
 const TARGET_HEX: &str = "00000000000010c6e6d9be4cd700000000000000000000000000000000000000";
 const MAX_TARGET_HEX: &str = "00000000FFFF0000000000000000000000000000000000000000000000000000";
 
@@ -60,14 +61,14 @@ fn calculate_difficulty_from_hash(target: &[u8]) -> f64 {
 fn generate_fake_share(sequence_number: u32) -> ShareLog {
     let mut rng = rand::thread_rng();
     
-    // Generate target from constant
     let target = hex::decode(TARGET_HEX).unwrap();
     
-    // Generate random hash that would be valid for the target
+    let mut extranonce = vec![0u8; 16];
+    extranonce[7] = 1;
+    
     let mut hash = vec![0u8; 32];
     rng.fill(&mut hash[..]);
     
-    // Get current Unix timestamp
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -80,9 +81,9 @@ fn generate_fake_share(sequence_number: u32) -> ShareLog {
         job_id: rng.gen(),
         nonce: rng.gen(),
         ntime: now,
-        version: 536870912, // Common version for Bitcoin
+        version: 536870912,
         target: target.clone(),
-        extranonce: Some(vec![1, 2, 3, 4]),
+        extranonce: Some(extranonce),
         is_valid: true,
         error_code: None,
         hash: hash.clone(),
@@ -178,6 +179,12 @@ async fn write_batch(client: &Client, batch: &[ShareLog]) -> Result<(), clickhou
 
 #[tokio::main]
 async fn main() {
+    let start_time = Instant::now();
+    
+    println!("Starting share faker...");
+    println!("Batch size: {}", BATCH_SIZE);
+    println!("Total shares to generate: {}", TOTAL_SHARES);
+
     let client = Client::default()
         .with_url(CLICKHOUSE_URL)
         .with_database(CLICKHOUSE_DATABASE)
@@ -189,13 +196,25 @@ async fn main() {
         return;
     }
 
+    let mut total_written = 0;
     let mut batch = Vec::with_capacity(BATCH_SIZE);
+    
     for i in 0..TOTAL_SHARES {
         batch.push(generate_fake_share(i as u32));
 
         if batch.len() >= BATCH_SIZE {
             if let Err(e) = write_batch(&client, &batch).await {
                 error!("Error writing batch: {}", e);
+            } else {
+                total_written += batch.len();
+                let elapsed = start_time.elapsed();
+                println!(
+                    "Wrote batch of {} shares. Total written: {}. Time elapsed: {}.{:06} seconds",
+                    batch.len(),
+                    total_written,
+                    elapsed.as_secs(),
+                    elapsed.subsec_micros()
+                );
             }
             batch.clear();
         }
@@ -204,6 +223,29 @@ async fn main() {
     if !batch.is_empty() {
         if let Err(e) = write_batch(&client, &batch).await {
             error!("Error writing final batch: {}", e);
+        } else {
+            total_written += batch.len();
+            let elapsed = start_time.elapsed();
+            println!(
+                "Wrote final batch of {} shares. Total written: {}. Time elapsed: {}.{:06} seconds",
+                batch.len(),
+                total_written,
+                elapsed.as_secs(),
+                elapsed.subsec_micros()
+            );
         }
     }
+
+    let duration = start_time.elapsed();
+    println!("\nExecution completed:");
+    println!("Total shares written: {}", total_written);
+    println!(
+        "Time taken: {}.{:06} seconds",
+        duration.as_secs(),
+        duration.subsec_micros()
+    );
+    println!(
+        "Average speed: {:.2} shares/second",
+        total_written as f64 / (duration.as_secs() as f64 + duration.subsec_micros() as f64 / 1_000_000.0)
+    );
 }
