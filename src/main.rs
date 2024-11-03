@@ -94,7 +94,7 @@ fn generate_fake_share(sequence_number: u32) -> ShareLog {
 async fn initialize_table(client: &Client) -> Result<(), clickhouse::error::Error> {
     client
         .query(
-            "CREATE TABLE IF NOT EXISTS fake_share_logs (
+            "CREATE TABLE IF NOT EXISTS fake_share_logs_mv (
                 timestamp DateTime,
                 channel_id UInt32,
                 sequence_number UInt32,
@@ -114,6 +114,26 @@ async fn initialize_table(client: &Client) -> Result<(), clickhouse::error::Erro
             PARTITION BY toYYYYMMDD(timestamp)
             PRIMARY KEY (channel_id, timestamp)
             ORDER BY (channel_id, timestamp, sequence_number)",
+        )
+        .execute()
+        .await?;
+
+    client
+        .query(
+            "CREATE MATERIALIZED VIEW IF NOT EXISTS mv_channel_stats
+            ENGINE = SummingMergeTree()
+            PARTITION BY toYYYYMMDD(period_start)
+            ORDER BY (channel_id, period_start)
+            AS
+            SELECT
+                channel_id,
+                toStartOfMinute(timestamp) as period_start,
+                count() as share_count,
+                sum(difficulty * pow(2, 32)) as total_hashes,
+                min(timestamp) as min_timestamp,
+                max(timestamp) as max_timestamp
+            FROM fake_share_logs_mv
+            GROUP BY channel_id, period_start",
         )
         .execute()
         .await
@@ -164,9 +184,8 @@ async fn write_batch(client: &Client, batch: &[ShareLog]) -> Result<(), clickhou
         ));
     }
 
-    
     let query = format!(
-        "INSERT INTO fake_share_logs (
+        "INSERT INTO fake_share_logs_mv (
             timestamp, channel_id, sequence_number, job_id,
             nonce, ntime, version, target, extranonce,
             is_valid, error_code, hash, difficulty
