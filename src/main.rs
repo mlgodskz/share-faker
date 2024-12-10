@@ -64,21 +64,22 @@ fn generate_fake_share(sequence_number: u32) -> ShareLog {
     let mut extranonce = vec![0u8; 16];
     rng.fill(&mut extranonce[..]);
     
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as u32;
+    // случайное время в пределах последних 3 дней
+    let now = Utc::now();
+    let three_days = chrono::Duration::days(3);
+    let random_seconds = rng.gen_range(0..three_days.num_seconds());
+    let timestamp = now - chrono::Duration::seconds(random_seconds);
 
     ShareLog {
-        timestamp: Utc::now(),
+        timestamp,
         channel_id: rng.gen_range(1..=10),
         sequence_number,
         job_id: rng.gen(),
         nonce: rng.gen(),
-        ntime: now,
+        ntime: timestamp.timestamp() as u32,
         version: 536870912,
         hash: hex::encode(&hash),
-        share_status: rng.gen_range(0..=3), // 0=Invalid, 1=NetworkValid, 2=PoolValid, 3=MinerValid
+        share_status: rng.gen_range(0..=3),
         extranonce: hex::encode(&extranonce),
         difficulty: calculate_difficulty_from_hash(&hash),
     }
