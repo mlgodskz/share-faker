@@ -13,6 +13,7 @@ const CLICKHOUSE_USERNAME: &str = "default";
 const CLICKHOUSE_PASSWORD: &str = "5555";
 const BATCH_SIZE: usize = 1000;
 const TOTAL_SHARES: usize = 1000000;
+const TARGET_HEX: &str = "00000000000010c6e6d9be4cd700000000000000000000000000000000000000";
 const MAX_TARGET_HEX: &str = "00000000FFFF0000000000000000000000000000000000000000000000000000";
 
 lazy_static::lazy_static! {
@@ -28,9 +29,11 @@ struct ShareLog {
     nonce: u32,
     ntime: u32,
     version: u32,
-    hash: String,
-    share_status: u8,
-    extranonce: String,
+    target: Vec<u8>,
+    extranonce: Option<Vec<u8>>,
+    is_valid: bool,
+    error_code: Option<String>,
+    hash: Vec<u8>,
     difficulty: f64,
 }
 
@@ -58,11 +61,13 @@ fn calculate_difficulty_from_hash(target: &[u8]) -> f64 {
 fn generate_fake_share(sequence_number: u32) -> ShareLog {
     let mut rng = rand::thread_rng();
     
-    let mut hash = vec![0u8; 32];
-    rng.fill(&mut hash[..]);
+    let target = hex::decode(TARGET_HEX).unwrap();
     
     let mut extranonce = vec![0u8; 16];
-    rng.fill(&mut extranonce[..]);
+    extranonce[7] = 1;
+    
+    let mut hash = vec![0u8; 32];
+    rng.fill(&mut hash[..]);
     
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -77,9 +82,11 @@ fn generate_fake_share(sequence_number: u32) -> ShareLog {
         nonce: rng.gen(),
         ntime: now,
         version: 536870912,
-        hash: hex::encode(&hash),
-        share_status: rng.gen_range(0..=3), // 0=Invalid, 1=NetworkValid, 2=PoolValid, 3=MinerValid
-        extranonce: hex::encode(&extranonce),
+        target: target.clone(),
+        extranonce: Some(extranonce),
+        is_valid: true,
+        error_code: None,
+        hash: hash.clone(),
         difficulty: calculate_difficulty_from_hash(&hash),
     }
 }
@@ -87,29 +94,33 @@ fn generate_fake_share(sequence_number: u32) -> ShareLog {
 async fn initialize_table(client: &Client) -> Result<(), clickhouse::error::Error> {
     client
         .query(
-            "CREATE TABLE IF NOT EXISTS shares (
+            "CREATE TABLE IF NOT EXISTS fake_share_logs_mv (
+                timestamp DateTime,
                 channel_id UInt32,
                 sequence_number UInt32,
                 job_id UInt32,
                 nonce UInt32,
                 ntime UInt32,
                 version UInt32,
-                hash String,
-                share_status UInt8,
-                extranonce String,
+                target Array(UInt8),
+                extranonce Array(UInt8),
+                is_valid UInt8,
+                error_code Nullable(String),
+                hash Array(UInt8),
                 difficulty Float64,
-                timestamp DateTime64(3) DEFAULT now64(3)
+                _timestamp_minute DateTime MATERIALIZED toStartOfMinute(timestamp),
+                _timestamp_hour DateTime MATERIALIZED toStartOfHour(timestamp)
             ) ENGINE = MergeTree()
             PARTITION BY toYYYYMMDD(timestamp)
-            ORDER BY (channel_id, timestamp, sequence_number)
-            SETTINGS index_granularity = 8192",
+            PRIMARY KEY (channel_id, timestamp)
+            ORDER BY (channel_id, timestamp, sequence_number)",
         )
         .execute()
         .await?;
 
     client
         .query(
-            "CREATE MATERIALIZED VIEW IF NOT EXISTS mv_hash_rate_stats
+            "CREATE MATERIALIZED VIEW IF NOT EXISTS mv_channel_stats
             ENGINE = SummingMergeTree()
             PARTITION BY toYYYYMMDD(period_start)
             ORDER BY (channel_id, period_start)
@@ -121,7 +132,7 @@ async fn initialize_table(client: &Client) -> Result<(), clickhouse::error::Erro
                 sum(difficulty * pow(2, 32)) as total_hashes,
                 min(timestamp) as min_timestamp,
                 max(timestamp) as max_timestamp
-            FROM shares
+            FROM fake_share_logs_mv
             GROUP BY channel_id, period_start",
         )
         .execute()
@@ -131,27 +142,53 @@ async fn initialize_table(client: &Client) -> Result<(), clickhouse::error::Erro
 async fn write_batch(client: &Client, batch: &[ShareLog]) -> Result<(), clickhouse::error::Error> {
     let mut values = Vec::with_capacity(batch.len());
     for log in batch {
+        let extranonce_str = log
+            .extranonce
+            .as_ref()
+            .map(|v| format!("[{}]", v.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",")))
+            .unwrap_or_else(|| "[]".to_string());
+        let target_str = format!(
+            "[{}]",
+            log.target
+                .iter()
+                .map(|b| b.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let hash_str = format!(
+            "[{}]",
+            log.hash
+                .iter()
+                .map(|b| b.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
         values.push(format!(
-            "({}, {}, {}, {}, {}, {}, '{}', {}, '{}', {}, '{}')",
+            "('{}', {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+            log.timestamp.format("%Y-%m-%d %H:%M:%S"),
             log.channel_id,
             log.sequence_number,
             log.job_id,
             log.nonce,
             log.ntime,
             log.version,
-            log.hash,
-            log.share_status,
-            log.extranonce,
-            log.difficulty,
-            log.timestamp.format("%Y-%m-%d %H:%M:%S.%3f")
+            target_str,
+            extranonce_str,
+            if log.is_valid { 1 } else { 0 },
+            log.error_code
+                .as_ref()
+                .map(|s| format!("'{}'", s))
+                .unwrap_or_else(|| "NULL".to_string()),
+            hash_str,
+            log.difficulty
         ));
     }
 
     let query = format!(
-        "INSERT INTO shares (
-            channel_id, sequence_number, job_id, nonce,
-            ntime, version, hash, share_status,
-            extranonce, difficulty, timestamp
+        "INSERT INTO fake_share_logs_mv (
+            timestamp, channel_id, sequence_number, job_id,
+            nonce, ntime, version, target, extranonce,
+            is_valid, error_code, hash, difficulty
         ) VALUES {}",
         values.join(",")
     );
