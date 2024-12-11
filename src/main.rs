@@ -4,7 +4,6 @@ use rand::Rng;
 use std::time::Instant;
 use tracing::error;
 
-// Constants
 const CLICKHOUSE_URL: &str = "http://localhost:8123";
 const CLICKHOUSE_DATABASE: &str = "mining";
 const CLICKHOUSE_USERNAME: &str = "default";
@@ -37,11 +36,12 @@ fn generate_fake_share(sequence_number: u32) -> ShareLog {
     
     let mut extranonce = vec![0u8; 16];
     rng.fill(&mut extranonce[..]);
-    
+    // генерим шары с равномерным распределением на неделю назад и неделю вперед от сейчас
     let now = Utc::now();
-    let three_days = chrono::Duration::days(3);
-    let random_seconds = rng.gen_range(0..three_days.num_seconds());
-    let timestamp = now - chrono::Duration::seconds(random_seconds);
+    let two_weeks = chrono::Duration::days(14);
+    let random_seconds = rng.gen_range(0..two_weeks.num_seconds());
+
+    let timestamp = now - chrono::Duration::days(7) + chrono::Duration::seconds(random_seconds);
 
     ShareLog {
         timestamp,

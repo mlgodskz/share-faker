@@ -1,4 +1,5 @@
 cd /home/ro/projects/nomium/01_SRI-Local-Utils/share-faker
+# Запустить генерацию
 cargo run
 
 # Удаление всех данных
@@ -11,6 +12,44 @@ curl -X POST 'http://localhost:8123/' \
 -H "X-ClickHouse-User: default" \
 -H "X-ClickHouse-Key: 5555" \
 -d "DROP TABLE IF EXISTS mining.shares"
+
+####
+
+## данные за последний час из MV
+
+curl -X POST 'http://localhost:8123/' \
+-H "X-ClickHouse-User: default" \
+-H "X-ClickHouse-Key: 5555" \
+-d "SELECT 
+    total_shares,
+    total_hashes,
+    total_hashes / 3600 AS hashrate
+FROM (
+    SELECT 
+        sum(share_count) AS total_shares, 
+        sum(total_hashes) AS total_hashes
+    FROM mining.mv_hash_rate_stats
+    WHERE channel_id = 1 AND period_start BETWEEN now() - ()
+)
+FORMAT Pretty"
+
+## то же самое из shares
+
+curl -X POST 'http://localhost:8123/' \
+-H "X-ClickHouse-User: default" \
+-H "X-ClickHouse-Key: 5555" \
+-d "SELECT 
+    total_shares,
+    total_hashes,
+    total_hashes / 3600 AS hashrate
+FROM (
+    SELECT 
+        count() AS total_shares,
+        sum(difficulty * pow(2, 32)) AS total_hashes
+    FROM mining.shares
+    WHERE channel_id = 1 AND timestamp BETWEEN now() - INTERVAL 1 HOUR AND now()
+)
+FORMAT Pretty"
 
 ####
 
@@ -30,20 +69,6 @@ curl -X POST 'http://localhost:8123/' \
 FROM mining.shares 
 GROUP BY channel_id
 ORDER BY channel_id
-FORMAT Pretty"
-
-# 3. Хэшрейт за последний час по каждому воркеру
-curl -X POST 'http://localhost:8123/' \
--H "X-ClickHouse-User: default" \
--H "X-ClickHouse-Key: 5555" \
--d "SELECT 
-    channel_id,
-    sum(total_hashes) / 3600 as hashrate_per_second,
-    sum(share_count) as shares_count
-FROM mining.mv_hash_rate_stats 
-WHERE period_start >= now() - INTERVAL 1 HOUR
-GROUP BY channel_id
-ORDER BY hashrate_per_second DESC
 FORMAT Pretty"
 
 # 4. Проверка последних записей (чтобы увидеть структуру данных)
@@ -67,58 +92,3 @@ GROUP BY share_status
 ORDER BY share_status
 FORMAT Pretty"
 
-# 6. Детальная почасовая статистика для конкретного воркера
-curl -X POST 'http://localhost:8123/' \
--H "X-ClickHouse-User: default" \
--H "X-ClickHouse-Key: 5555" \
--d "SELECT 
-    channel_id,
-    toStartOfHour(period_start) as hour,
-    sum(share_count) as shares,
-    sum(total_hashes) / 3600 as hashrate_per_second
-FROM mining.mv_hash_rate_stats 
-WHERE channel_id = 1
-  AND period_start >= now() - INTERVAL 24 HOUR
-GROUP BY channel_id, hour
-ORDER BY hour DESC
-FORMAT Pretty"
-
-####
-
-# Проверка распределения по часам
-curl -X POST 'http://localhost:8123/' \
--H "X-ClickHouse-User: default" \
--H "X-ClickHouse-Key: 5555" \
--d "SELECT 
-    toStartOfHour(timestamp) as hour,
-    count() as shares_count
-FROM mining.shares 
-GROUP BY hour
-ORDER BY hour
-FORMAT Pretty"
-
-# Проверка распределения по дням
-curl -X POST 'http://localhost:8123/' \
--H "X-ClickHouse-User: default" \
--H "X-ClickHouse-Key: 5555" \
--d "SELECT 
-    toDate(timestamp) as date,
-    count() as shares_count
-FROM mining.shares 
-GROUP BY date
-ORDER BY date
-FORMAT Pretty"
-
-# Статистика по воркерам за последние сутки
-curl -X POST 'http://localhost:8123/' \
--H "X-ClickHouse-User: default" \
--H "X-ClickHouse-Key: 5555" \
--d "SELECT 
-    channel_id,
-    sum(total_hashes) / 86400 as avg_hashrate_per_second,
-    sum(share_count) as total_shares
-FROM mining.mv_hash_rate_stats 
-WHERE period_start >= now() - INTERVAL 1 DAY
-GROUP BY channel_id
-ORDER BY avg_hashrate_per_second DESC
-FORMAT Pretty"
