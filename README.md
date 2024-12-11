@@ -2,6 +2,43 @@ cd /home/ro/projects/nomium/01_SRI-Local-Utils/share-faker
 # Запустить генерацию
 cargo run
 
+## Концептуально посчитать PPS за последний час для channel_id (как образец математики для PPS)
+
+curl -X POST 'http://localhost:8123/' \
+-H "X-ClickHouse-User: default" \
+-H "X-ClickHouse-Key: 5555" \
+-d "SELECT 
+    (worker_hashrate / network_hashrate) * blocks_per_hour * block_reward AS btc_earned
+FROM (
+    SELECT 
+        sum(total_hashes) / 3600 AS worker_hashrate
+    FROM mining.mv_hash_rate_stats
+    WHERE channel_id = 1 AND period_start BETWEEN now() - INTERVAL 1 HOUR AND now()
+) AS t
+CROSS JOIN (
+    SELECT 759218523e12 AS network_hashrate, 6 AS blocks_per_hour, 3.25 AS block_reward
+) AS c
+FORMAT Pretty"
+
+##
+
+График сложности Bitcoin
+Текущая сложность:	103919634711492
+Мощность сети (Th/s):	759218523
+Блоков в сети:	874119
+Блоков в час:	6.14
+Блоков за последний час:	6
+
+Одна из возможных формул концептуального подсчета вознаграждения PPS:
+
+1) Мы знаем ориентировочную мощность сети BTC в целом: 759218523 Th/s
+2) Мы знаем хэшрейт воркера за последний час.
+3) Мы знаем что в час добывается 6 блоков по 3,25 BTC за каждый
+
+Отсюда мы можем найти вклад воркера в общую мощность сети за последний час, и понять какова его пропорциональная доля в добытых 6*3,25 BTC
+
+Это пока без поправочных коэффициентов.
+
 # Удаление всех данных
 curl -X POST 'http://localhost:8123/' \
 -H "X-ClickHouse-User: default" \
