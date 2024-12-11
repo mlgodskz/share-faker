@@ -4,6 +4,7 @@ cargo run
 
 ## Концептуально посчитать PPS за последний час для channel_id (как образец математики для PPS)
 
+```
 curl -X POST 'http://localhost:8123/' \
 -H "X-ClickHouse-User: default" \
 -H "X-ClickHouse-Key: 5555" \
@@ -19,6 +20,7 @@ CROSS JOIN (
     SELECT 759218523e12 AS network_hashrate, 6 AS blocks_per_hour, 3.25 AS block_reward
 ) AS c
 FORMAT Pretty"
+```
 
 ##
 
